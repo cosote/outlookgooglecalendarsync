@@ -590,7 +590,7 @@ namespace OutlookGoogleCalendarSync {
             //Otherwise, tasktray shows "another program is using outlook" and it doesn't send and receive emails
             OutlookCalendar.Instance.IOutlook.Disconnect(onlyWhenNoGUI: true);
 
-            checkSyncMilestone();
+            //checkSyncMilestone();
         }
 
         private void skipCorruptedItem(ref List<AppointmentItem> outlookEntries, AppointmentItem cai, String errMsg) {
