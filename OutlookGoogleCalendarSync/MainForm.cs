@@ -510,6 +510,7 @@ namespace OutlookGoogleCalendarSync {
             Social.TrackSync();
             GoogleCalendar.Instance.GetCalendarSettings();
             while (!syncOk) {
+                /*
                 if (failedAttempts > 0 &&
                     MessageBox.Show("The synchronisation failed - check the Sync tab for further details.\r\nDo you want to try again?", "Sync Failed",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Exclamation) == System.Windows.Forms.DialogResult.No) 
@@ -518,7 +519,7 @@ namespace OutlookGoogleCalendarSync {
                     NotificationTray.UpdateItem("sync", "&Sync Now");
                     break;
                 }
-
+                */
                 //Set up a separate thread for the sync to operate in. Keeps the UI responsive.
                 bwSync = new AbortableBackgroundWorker();
                 //Don't need thread to report back. The logbox is updated from the thread anyway.
