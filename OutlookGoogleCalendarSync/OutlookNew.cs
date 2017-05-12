@@ -76,7 +76,7 @@ namespace OutlookGoogleCalendarSync {
                 folders = oNS.Folders;
 
                 // Get the Calendar folders
-                useOutlookCalendar = getDefaultCalendar(oNS);
+                useOutlookCalendar = getCalendarStore(oNS);
                 if (MainForm.Instance.IsHandleCreated) {
                     log.Fine("Resetting connection, so re-selecting calendar from GUI dropdown");
 
@@ -152,7 +152,7 @@ namespace OutlookGoogleCalendarSync {
                 return oApp.GetNamespace("mapi").Offline;
             } catch {
                 OutlookCalendar.Instance.Reset();
-                return oApp.GetNamespace("mapi").Offline;
+                return OutlookCalendar.Instance.IOutlook.Offline();
             }
         }
         public OlExchangeConnectionMode ExchangeConnectionMode() {
@@ -164,7 +164,7 @@ namespace OutlookGoogleCalendarSync {
         private const String EMAIL1ADDRESS = "http://schemas.microsoft.com/mapi/id/{00062004-0000-0000-C000-000000000046}/8084001F";
         private const String PR_IPM_WASTEBASKET_ENTRYID = "http://schemas.microsoft.com/mapi/proptag/0x35E30102";
 
-        private MAPIFolder getDefaultCalendar(NameSpace oNS) {
+        private MAPIFolder getCalendarStore(NameSpace oNS) {
             MAPIFolder defaultCalendar = null;
             if (Settings.Instance.OutlookService == OutlookCalendar.Service.AlternativeMailbox && Settings.Instance.MailboxName != "") {
                 log.Debug("Finding Alternative Mailbox calendar folders");
@@ -198,35 +198,90 @@ namespace OutlookGoogleCalendarSync {
                     log.Info("Could not find Alternative mailbox Calendar folder. Reverting to the default mailbox calendar.");
                     System.Windows.Forms.MessageBox.Show("Unable to find a Calendar folder in the alternative mailbox.\r\n" +
                         "Reverting to the default mailbox calendar", "Calendar not found", System.Windows.Forms.MessageBoxButtons.OK);
-                    MainForm.Instance.rbOutlookDefaultMB.CheckedChanged -= MainForm.Instance.rbOutlookDefaultMB_CheckedChanged;
-                    MainForm.Instance.rbOutlookDefaultMB.Checked = true;
-                    MainForm.Instance.rbOutlookDefaultMB.CheckedChanged += MainForm.Instance.rbOutlookDefaultMB_CheckedChanged;
-                    defaultCalendar = oNS.GetDefaultFolder(OlDefaultFolders.olFolderCalendar);
-                    calendarFolders.Add("Default " + defaultCalendar.Name, defaultCalendar);
-                    string excludeDeletedFolder = folders.Application.Session.GetDefaultFolder(OlDefaultFolders.olFolderDeletedItems).EntryID;
-                    
-                    MainForm.Instance.lOutlookCalendar.Text = "Getting calendars";
-                    MainForm.Instance.lOutlookCalendar.BackColor = System.Drawing.Color.Yellow;
-                    findCalendars(oNS.DefaultStore.GetRootFolder().Folders, calendarFolders, excludeDeletedFolder, defaultCalendar);
-                    MainForm.Instance.lOutlookCalendar.BackColor = System.Drawing.Color.White;
-                    MainForm.Instance.lOutlookCalendar.Text = "Select calendar";
+                    getDefaultCalendar(oNS, ref defaultCalendar);
                     MainForm.Instance.ddMailboxName.Text = "";
                 }
 
-            } else {
-                log.Debug("Finding default Mailbox calendar folders");
-                defaultCalendar = oNS.GetDefaultFolder(OlDefaultFolders.olFolderCalendar);
-                calendarFolders.Add("Default " + defaultCalendar.Name, defaultCalendar);
-                string excludeDeletedFolder = folders.Application.Session.GetDefaultFolder(OlDefaultFolders.olFolderDeletedItems).EntryID;
+            } else if (Settings.Instance.OutlookService == OutlookCalendar.Service.SharedCalendar) {
+                log.Debug("Finding shared calendar");
+                if (MainForm.Instance.Visible) {
+                    SelectNamesDialog snd;
+                    try {
+                        snd = oNS.GetSelectNamesDialog();
+                        snd.NumberOfRecipientSelectors = OlRecipientSelectors.olShowNone;
+                        snd.ForceResolution = true;
+                        snd.AllowMultipleSelection = false;
+                        snd.Display();
+                        if (snd.Recipients.Count == 0) {
+                            log.Info("No shared calendar selected.");
+                            getDefaultCalendar(oNS, ref defaultCalendar);
+                        } else {
+                            String sharedURI = snd.Recipients[1].Address;
+                            MAPIFolder sharedCalendar = getSharedCalendar(oNS, sharedURI);
+                            if (sharedCalendar == null) getDefaultCalendar(oNS, ref defaultCalendar);
+                            else {
+                                Settings.Instance.SharedCalendar = sharedURI;
+                                return sharedCalendar;
+                            }
+                        }
+                    } finally {
+                        snd = null;
+                    }
+                } else {
+                    defaultCalendar = getSharedCalendar(oNS, Settings.Instance.SharedCalendar);
+                    if (defaultCalendar == null) getDefaultCalendar(oNS, ref defaultCalendar);
+                    else return defaultCalendar;
+                }
 
-                MainForm.Instance.lOutlookCalendar.BackColor = System.Drawing.Color.Yellow;
-                MainForm.Instance.lOutlookCalendar.Text = "Getting calendars";
-                findCalendars(oNS.DefaultStore.GetRootFolder().Folders, calendarFolders, excludeDeletedFolder, defaultCalendar);
-                MainForm.Instance.lOutlookCalendar.BackColor = System.Drawing.Color.White;
-                MainForm.Instance.lOutlookCalendar.Text = "Select calendar";
+            } else {
+                getDefaultCalendar(oNS, ref defaultCalendar);
             }
             log.Debug("Default Calendar folder: " + defaultCalendar.Name);
             return defaultCalendar;
+        }
+
+        private MAPIFolder getSharedCalendar(NameSpace oNS, String sharedURI) {
+            Recipient sharer = null;
+            MAPIFolder sharedCalendar = null;
+            try {
+                sharer = oNS.CreateRecipient(sharedURI);
+                sharer.Resolve();
+                if (sharer.DisplayType == OlDisplayType.olDistList)
+                    throw new System.Exception("User selected a distribution list!");
+
+                sharedCalendar = oNS.GetSharedDefaultFolder(sharer, OlDefaultFolders.olFolderCalendar);
+                if (sharedCalendar.DefaultItemType != OlItemType.olAppointmentItem) {
+                    log.Debug(sharer.Name + " does not have a calendar shared.");
+                    throw new System.Exception("Wrong default item type.");
+                }
+                calendarFolders.Add(sharer.Name, sharedCalendar);
+                return sharedCalendar;
+
+            } catch (System.Exception ex) {
+                log.Error("Failed to get shared calendar from " + sharedURI +". "+ ex.Message);
+                MessageBox.Show("Could not find a shared calendar for '"+ sharer.Name + "'.", "No shared calendar found", 
+                        MessageBoxButtons.OK, MessageBoxIcon.Exclamation);
+                return null;
+            } finally {
+                sharer = (Recipient)OutlookCalendar.ReleaseObject(sharer);
+            }
+        }
+
+        private void getDefaultCalendar(NameSpace oNS, ref MAPIFolder defaultCalendar) {
+            log.Debug("Finding default Mailbox calendar folders");
+            MainForm.Instance.rbOutlookDefaultMB.CheckedChanged -= MainForm.Instance.rbOutlookDefaultMB_CheckedChanged;
+            MainForm.Instance.rbOutlookDefaultMB.Checked = true;
+            MainForm.Instance.rbOutlookDefaultMB.CheckedChanged += MainForm.Instance.rbOutlookDefaultMB_CheckedChanged;
+
+            defaultCalendar = oNS.GetDefaultFolder(OlDefaultFolders.olFolderCalendar);
+            calendarFolders.Add("Default " + defaultCalendar.Name, defaultCalendar);
+            string excludeDeletedFolder = folders.Application.Session.GetDefaultFolder(OlDefaultFolders.olFolderDeletedItems).EntryID;
+
+            MainForm.Instance.lOutlookCalendar.BackColor = System.Drawing.Color.Yellow;
+            MainForm.Instance.lOutlookCalendar.Text = "Getting calendars";
+            findCalendars(oNS.DefaultStore.GetRootFolder().Folders, calendarFolders, excludeDeletedFolder, defaultCalendar);
+            MainForm.Instance.lOutlookCalendar.BackColor = System.Drawing.Color.White;
+            MainForm.Instance.lOutlookCalendar.Text = "Select calendar";
         }
 
         private void findCalendars(Folders folders, Dictionary<string, MAPIFolder> calendarFolders, String excludeDeletedFolder, MAPIFolder defaultCalendar = null) {
@@ -237,12 +292,12 @@ namespace OutlookGoogleCalendarSync {
                 MainForm.Instance.lOutlookCalendar.Location.Y + MainForm.Instance.lOutlookCalendar.Size.Height + 3);
             double stepSize = MainForm.Instance.lOutlookCalendar.Size.Width / folders.Count;
             
-            int fldCnt = 0;    
+            int fldCnt = 0;
             foreach (MAPIFolder folder in folders) {
                 fldCnt++;
                 System.Drawing.Point endPoint = new System.Drawing.Point(MainForm.Instance.lOutlookCalendar.Location.X + Convert.ToInt16(fldCnt * stepSize),
                     MainForm.Instance.lOutlookCalendar.Location.Y + MainForm.Instance.lOutlookCalendar.Size.Height + 3);
-                g.DrawLine(p, startPoint, endPoint); 
+                try { g.DrawLine(p, startPoint, endPoint); } catch { /*May get GDI+ error if g has been repainted*/ }
                 System.Windows.Forms.Application.DoEvents();
                 try {
                     OlItemType defaultItemType = folder.DefaultItemType;
@@ -254,12 +309,12 @@ namespace OutlookGoogleCalendarSync {
                     if (folder.EntryID != excludeDeletedFolder && folder.Folders.Count > 0) {
                         findCalendars(folder.Folders, calendarFolders, excludeDeletedFolder, defaultCalendar);
                     }
-
                 } catch (System.Exception ex) {
                     OGCSexception.Analyse(ex);
                     if (oApp.Session.ExchangeConnectionMode.ToString().Contains("Disconnected") ||
-                        ex.Message.StartsWith("Network problems are preventing connection to Microsoft Exchange.")) {
-                            log.Info("Currently disconnected from Exchange - unable to retrieve MAPI folders.");
+                        ex.Message.StartsWith("Network problems are preventing connection to Microsoft Exchange.") ||
+                        OGCSexception.GetErrorCode(ex, 0x000FFFFF) == "0x00040115") {
+                        log.Info("Currently disconnected from Exchange - unable to retrieve MAPI folders.");
                         MainForm.Instance.ToolTips.SetToolTip(MainForm.Instance.cbOutlookCalendars,
                             "The Outlook calendar to synchonize with.\nSome may not be listed as you are currently disconnected.");
                     } else {
@@ -271,7 +326,7 @@ namespace OutlookGoogleCalendarSync {
                 }
             }
             p.Dispose();
-            g.Clear(System.Drawing.Color.White);
+            try { g.Clear(System.Drawing.Color.White); } catch { }
             g.Dispose();
             System.Windows.Forms.Application.DoEvents();
         }
@@ -284,8 +339,11 @@ namespace OutlookGoogleCalendarSync {
 
         public String GetRecipientEmail(Recipient recipient) {
             String retEmail = "";
+            Boolean builtFakeEmail = false;
+
             log.Fine("Determining email of recipient: " + recipient.Name);
             AddressEntry addressEntry = null;
+            String addressEntryType = "";
             try {
                 try {
                     addressEntry = recipient.AddressEntry;
@@ -295,97 +353,101 @@ namespace OutlookGoogleCalendarSync {
                 }
                 if (addressEntry == null) {
                     log.Warn("No AddressEntry exists!");
-                    retEmail = EmailAddress.BuildFakeEmailAddress(recipient.Name);
-                    EmailAddress.IsValidEmail(retEmail);
-                    return retEmail;
-                }
-                log.Fine("AddressEntry Type: " + addressEntry.Type);
-                if (addressEntry.Type == "EX") { //Exchange
-                    log.Fine("Address is from Exchange");
-                    if (addressEntry.AddressEntryUserType == OlAddressEntryUserType.olExchangeUserAddressEntry ||
-                        addressEntry.AddressEntryUserType == OlAddressEntryUserType.olExchangeRemoteUserAddressEntry) {
-                        ExchangeUser eu = null;
-                        try {
-                            eu = addressEntry.GetExchangeUser();
-                            if (eu != null && eu.PrimarySmtpAddress != null)
-                                retEmail = eu.PrimarySmtpAddress;
-                            else {
-                                log.Warn("Exchange does not have an email for recipient: " + recipient.Name);
-                                Microsoft.Office.Interop.Outlook.PropertyAccessor pa = null;
-                                try {
-                                    //Should I try PR_EMS_AB_PROXY_ADDRESSES next to cater for cached mode?
-                                    pa = recipient.PropertyAccessor;
-                                    retEmail = pa.GetProperty(OutlookNew.PR_SMTP_ADDRESS).ToString();
-                                    log.Debug("Retrieved from PropertyAccessor instead.");
-                                } catch {
-                                    log.Warn("Also failed to retrieve email from PropertyAccessor.");
-                                    retEmail = EmailAddress.BuildFakeEmailAddress(recipient.Name);
-                                } finally {
-                                    pa = (Microsoft.Office.Interop.Outlook.PropertyAccessor)OutlookCalendar.ReleaseObject(pa);
-                                }
-                            }
-                        } finally {
-                            eu = (ExchangeUser)OutlookCalendar.ReleaseObject(eu);
-                        }
-
-                    } else if (addressEntry.AddressEntryUserType == OlAddressEntryUserType.olOutlookContactAddressEntry) {
-                        log.Fine("This is an Outlook contact");
-                        ContactItem contact = null;
-                        try {
+                    retEmail = EmailAddress.BuildFakeEmailAddress(recipient.Name, out builtFakeEmail);
+                } else {
+                    try {
+                        addressEntryType = addressEntry.Type;
+                    } catch {
+                        log.Warn("Cannot access addressEntry.Type!");
+                    }
+                    log.Fine("AddressEntry Type: " + addressEntryType);
+                    if (addressEntryType == "EX") { //Exchange
+                        log.Fine("Address is from Exchange");
+                        if (addressEntry.AddressEntryUserType == OlAddressEntryUserType.olExchangeUserAddressEntry ||
+                            addressEntry.AddressEntryUserType == OlAddressEntryUserType.olExchangeRemoteUserAddressEntry) {
+                            ExchangeUser eu = null;
                             try {
-                                contact = addressEntry.GetContact();
-                            } catch {
-                                log.Warn("Doesn't seem to be a valid contact object. Maybe this account is no longer in Exchange.");
-                                retEmail = EmailAddress.BuildFakeEmailAddress(recipient.Name);
-                            }
-                            if (contact != null) {
-                                if (contact.Email1AddressType == "EX") {
-                                    log.Fine("Address is from Exchange.");
-                                    log.Fine("Using PropertyAccessor to get email address.");
+                                eu = addressEntry.GetExchangeUser();
+                                if (eu != null && eu.PrimarySmtpAddress != null)
+                                    retEmail = eu.PrimarySmtpAddress;
+                                else {
+                                    log.Warn("Exchange does not have an email for recipient: " + recipient.Name);
                                     Microsoft.Office.Interop.Outlook.PropertyAccessor pa = null;
                                     try {
-                                        pa = contact.PropertyAccessor;
-                                        retEmail = pa.GetProperty(EMAIL1ADDRESS).ToString();
+                                        //Should I try PR_EMS_AB_PROXY_ADDRESSES next to cater for cached mode?
+                                        pa = recipient.PropertyAccessor;
+                                        retEmail = pa.GetProperty(OutlookNew.PR_SMTP_ADDRESS).ToString();
+                                        log.Debug("Retrieved from PropertyAccessor instead.");
+                                    } catch {
+                                        log.Warn("Also failed to retrieve email from PropertyAccessor.");
+                                        retEmail = EmailAddress.BuildFakeEmailAddress(recipient.Name, out builtFakeEmail);
                                     } finally {
                                         pa = (Microsoft.Office.Interop.Outlook.PropertyAccessor)OutlookCalendar.ReleaseObject(pa);
                                     }
-                                } else {
-                                    retEmail = contact.Email1Address;
                                 }
+                            } finally {
+                                eu = (ExchangeUser)OutlookCalendar.ReleaseObject(eu);
                             }
-                        } finally {
-                            contact = (ContactItem)OutlookCalendar.ReleaseObject(contact);
-                        }
-                    } else {
-                        log.Fine("Exchange type: " + addressEntry.AddressEntryUserType.ToString());
-                        log.Fine("Using PropertyAccessor to get email address.");
-                        Microsoft.Office.Interop.Outlook.PropertyAccessor pa = null;
-                        try {
-                            pa = recipient.PropertyAccessor;
-                            retEmail = pa.GetProperty(OutlookNew.PR_SMTP_ADDRESS).ToString();
-                        } finally {
-                            pa = (Microsoft.Office.Interop.Outlook.PropertyAccessor)OutlookCalendar.ReleaseObject(pa);
-                        }
-                    }
 
-                } else if (addressEntry.Type != null && addressEntry.Type.ToUpper() == "NOTES") {
-                    log.Fine("From Lotus Notes");
-                    //Migrated contacts from notes, have weird "email addresses" eg: "James T. Kirk/US-Corp03/enterprise/US"
-                    retEmail = EmailAddress.BuildFakeEmailAddress(recipient.Name);
-
-                } else {
-                    log.Fine("Not from Exchange");
-                    try {
-                        if (string.IsNullOrEmpty(addressEntry.Address)) {
-                            log.Warn("addressEntry.Address is empty.");
-                            retEmail = EmailAddress.BuildFakeEmailAddress(recipient.Name);
+                        } else if (addressEntry.AddressEntryUserType == OlAddressEntryUserType.olOutlookContactAddressEntry) {
+                            log.Fine("This is an Outlook contact");
+                            ContactItem contact = null;
+                            try {
+                                try {
+                                    contact = addressEntry.GetContact();
+                                } catch {
+                                    log.Warn("Doesn't seem to be a valid contact object. Maybe this account is no longer in Exchange.");
+                                    retEmail = EmailAddress.BuildFakeEmailAddress(recipient.Name, out builtFakeEmail);
+                                }
+                                if (contact != null) {
+                                    if (contact.Email1AddressType == "EX") {
+                                        log.Fine("Address is from Exchange.");
+                                        log.Fine("Using PropertyAccessor to get email address.");
+                                        Microsoft.Office.Interop.Outlook.PropertyAccessor pa = null;
+                                        try {
+                                            pa = contact.PropertyAccessor;
+                                            retEmail = pa.GetProperty(EMAIL1ADDRESS).ToString();
+                                        } finally {
+                                            pa = (Microsoft.Office.Interop.Outlook.PropertyAccessor)OutlookCalendar.ReleaseObject(pa);
+                                        }
+                                    } else {
+                                        retEmail = contact.Email1Address;
+                                    }
+                                }
+                            } finally {
+                                contact = (ContactItem)OutlookCalendar.ReleaseObject(contact);
+                            }
                         } else {
-                            retEmail = addressEntry.Address;
+                            log.Fine("Exchange type: " + addressEntry.AddressEntryUserType.ToString());
+                            log.Fine("Using PropertyAccessor to get email address.");
+                            Microsoft.Office.Interop.Outlook.PropertyAccessor pa = null;
+                            try {
+                                pa = recipient.PropertyAccessor;
+                                retEmail = pa.GetProperty(OutlookNew.PR_SMTP_ADDRESS).ToString();
+                            } finally {
+                                pa = (Microsoft.Office.Interop.Outlook.PropertyAccessor)OutlookCalendar.ReleaseObject(pa);
+                            }
                         }
-                    } catch (System.Exception ex) {
-                        log.Error("Failed accessing addressEntry.Address");
-                        log.Error(ex.Message);
-                        retEmail = EmailAddress.BuildFakeEmailAddress(recipient.Name);
+
+                    } else if (addressEntryType.ToUpper() == "NOTES") {
+                        log.Fine("From Lotus Notes");
+                        //Migrated contacts from notes, have weird "email addresses" eg: "James T. Kirk/US-Corp03/enterprise/US"
+                        retEmail = EmailAddress.BuildFakeEmailAddress(recipient.Name, out builtFakeEmail);
+
+                    } else {
+                        log.Fine("Not from Exchange");
+                        try {
+                            if (string.IsNullOrEmpty(addressEntry.Address)) {
+                                log.Warn("addressEntry.Address is empty.");
+                                retEmail = EmailAddress.BuildFakeEmailAddress(recipient.Name, out builtFakeEmail);
+                            } else {
+                                retEmail = addressEntry.Address;
+                            }
+                        } catch (System.Exception ex) {
+                            log.Error("Failed accessing addressEntry.Address");
+                            log.Error(ex.Message);
+                            retEmail = EmailAddress.BuildFakeEmailAddress(recipient.Name, out builtFakeEmail);
+                        }
                     }
                 }
 
@@ -394,7 +456,14 @@ namespace OutlookGoogleCalendarSync {
                     retEmail = retEmail.TrimEnd(Convert.ToChar(">"));
                 }
                 log.Fine("Email address: " + retEmail, retEmail);
-                EmailAddress.IsValidEmail(retEmail);
+                if (!EmailAddress.IsValidEmail(retEmail) && !builtFakeEmail) {
+                    retEmail = EmailAddress.BuildFakeEmailAddress(recipient.Name, out builtFakeEmail);
+                    if (!EmailAddress.IsValidEmail(retEmail)) {
+                        MainForm.Instance.Logboxout("ERROR: Recipient \"" + recipient.Name + "\" with email address \"" + retEmail + "\" is invalid.", notifyBubble: true);
+                        MainForm.Instance.Logboxout("This must be manually resolved in order to sync this appointment.");
+                        throw new ApplicationException("Invalid recipient email for \"" + recipient.Name + "\"");
+                    }
+                }
                 return retEmail;
             } finally {
                 addressEntry = (AddressEntry)OutlookCalendar.ReleaseObject(addressEntry);
@@ -489,6 +558,8 @@ namespace OutlookGoogleCalendarSync {
         }
 
         private Microsoft.Office.Interop.Outlook.TimeZone WindowsTimeZone(string ianaZoneId) {
+            ianaZoneId = TimezoneDB.FixAlexa(ianaZoneId);
+
             Microsoft.Office.Interop.Outlook.TimeZones tzs = oApp.TimeZones;
             var utcZones = new[] { "Etc/UTC", "Etc/UCT", "UTC", "Etc/GMT" };
             if (utcZones.Contains(ianaZoneId, StringComparer.OrdinalIgnoreCase)) {

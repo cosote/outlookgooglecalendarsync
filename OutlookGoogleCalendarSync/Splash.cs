@@ -9,6 +9,9 @@ namespace OutlookGoogleCalendarSync {
         
         private static Thread splashThread;
         private static Splash splash;
+        private static ToolTip ToolTips;
+        private static Boolean donor;
+        private static DateTime subscribed;
 
         public Splash() {
             InitializeComponent();
@@ -33,6 +36,29 @@ namespace OutlookGoogleCalendarSync {
                 splash.lSyncCount.Text = splash.lSyncCount.Text.Replace("{syncs}", String.Format("{0:n0}", completedSyncs));
                 splash.lSyncCount.Left = (splash.panel1.Width - (splash.lSyncCount.Width)) / 2;
             }
+            //Load settings directly from XML
+            donor = (XMLManager.ImportElement("Donor", Program.SettingsFile) ?? "false") == "true";
+            
+            String subscribedDate = XMLManager.ImportElement("Subscribed", Program.SettingsFile);
+            if (string.IsNullOrEmpty(subscribedDate)) subscribedDate = "01-Jan-2000";
+            subscribed = DateTime.Parse(subscribedDate);
+            Boolean hideSplash = (XMLManager.ImportElement("HideSplashScreen", Program.SettingsFile) ?? "false") == "true";
+            
+            splash.cbHideSplash.Checked = hideSplash;
+            if (subscribed == DateTime.Parse("01-Jan-2000") && !donor) {
+                ToolTips = new ToolTip();
+                ToolTips.AutoPopDelay = 10000;
+                ToolTips.InitialDelay = 500;
+                ToolTips.ReshowDelay = 200;
+                ToolTips.ShowAlways = true;
+            
+                ToolTips.SetToolTip(splash.cbHideSplash, "Donate £10 or more to enable this feature.");
+            } else if (hideSplash) {
+                log.Debug("Suppressing splash screen.");
+                return;
+            }
+            splash.TopLevel = true;
+            splash.TopMost = true;
             log.Debug("Showing splash screen.");
             Application.Run(splash);
             log.Debug("Disposed of splash screen.");
@@ -64,11 +90,35 @@ namespace OutlookGoogleCalendarSync {
 
         private void Splash_Shown(object sender, EventArgs e) {
             splash.Tag = DateTime.Now;
-            while (DateTime.Now < ((DateTime)splash.Tag).AddSeconds((System.Diagnostics.Debugger.IsAttached ? 1 : 8)) && !splash.IsDisposed) {
+            while (DateTime.Now < ((DateTime)splash.Tag).AddSeconds((System.Diagnostics.Debugger.IsAttached ? 2 : 8)) && !splash.IsDisposed) {
+                splash.BringToFront();
+                splash.TopLevel = true;
+                splash.TopMost = true;
                 Application.DoEvents();
                 System.Threading.Thread.Sleep(100);
             }
             CloseMe();
+        }
+
+        private void cbHideSplash_CheckedChanged(object sender, EventArgs e) {
+            if (!this.Visible) return;
+
+            if (subscribed == DateTime.Parse("01-Jan-2000") && !donor) {
+                this.cbHideSplash.CheckedChanged -= cbHideSplash_CheckedChanged;
+                cbHideSplash.Checked = false;
+                this.cbHideSplash.CheckedChanged += cbHideSplash_CheckedChanged;
+                ToolTips.Show(ToolTips.GetToolTip(cbHideSplash), cbHideSplash, 5000);
+                return;
+            }
+            if (cbHideSplash.Checked) {
+                this.Visible = false;
+                while (!Settings.InstanceInitialiased() && !MainForm.Instance.IsHandleCreated) {
+                    log.Debug("Waiting for settings and form to initialise in order to save HideSplashScreen preference.");
+                    System.Threading.Thread.Sleep(2000);
+                }
+                Settings.Instance.HideSplashScreen = true;
+                CloseMe();
+            }
         }
     }
 }
