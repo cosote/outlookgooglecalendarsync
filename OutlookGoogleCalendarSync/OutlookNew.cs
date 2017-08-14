@@ -9,7 +9,7 @@ using System.Windows.Forms;
 namespace OutlookGoogleCalendarSync {
     class OutlookNew : OutlookInterface {
         private static readonly ILog log = LogManager.GetLogger(typeof(OutlookNew));
-        
+
         private Microsoft.Office.Interop.Outlook.Application oApp;
         private String currentUserSMTP;  //SMTP of account owner that has Outlook open
         private String currentUserName;  //Name of account owner - used to determine if attendee is "self"
@@ -241,6 +241,8 @@ namespace OutlookGoogleCalendarSync {
         }
 
         private MAPIFolder getSharedCalendar(NameSpace oNS, String sharedURI) {
+            if (string.IsNullOrEmpty(sharedURI)) return null;
+
             Recipient sharer = null;
             MAPIFolder sharedCalendar = null;
             try {
@@ -271,6 +273,7 @@ namespace OutlookGoogleCalendarSync {
             log.Debug("Finding default Mailbox calendar folders");
             MainForm.Instance.rbOutlookDefaultMB.CheckedChanged -= MainForm.Instance.rbOutlookDefaultMB_CheckedChanged;
             MainForm.Instance.rbOutlookDefaultMB.Checked = true;
+            Settings.Instance.OutlookService = OutlookCalendar.Service.DefaultMailbox;
             MainForm.Instance.rbOutlookDefaultMB.CheckedChanged += MainForm.Instance.rbOutlookDefaultMB_CheckedChanged;
 
             defaultCalendar = oNS.GetDefaultFolder(OlDefaultFolders.olFolderCalendar);
